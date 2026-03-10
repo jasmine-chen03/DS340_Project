@@ -1,4 +1,5 @@
-# Load libraries
+##### DS340 Project #####
+
 library(tidyverse)
 library(data.table)
 
@@ -36,6 +37,10 @@ childcare <- activity %>%
            str_starts(as.character(TRCODE), "302") |
            str_starts(as.character(TRCODE), "303"))
 
+### Work activities
+work <- activity %>%
+  filter(str_starts(as.character(TRCODE), "5"))
+           
 ### Merge respondent info with childcare
 resp_all <- roster %>%
   left_join(respondent, by = "TUCASEID")
@@ -45,7 +50,17 @@ parents <- childcare %>%
   # total childcare time per respondent
   group_by(TUCASEID) %>%
   mutate(total_childcare = sum(TUACTDUR, na.rm = TRUE)) %>%
-  ungroup()
+  ungroup() 
+
+work_summary <- work %>%
+  group_by(TUCASEID) %>%
+  summarise(work_time = sum(TUACTDUR, na.rm = TRUE), .groups = "drop")
+
+parents <- parents %>%
+  left_join(work_summary, by = "TUCASEID") %>%
+  mutate(
+    Gender = recode(TESEX, `1` = "Male", `2` = "Female")
+  )
 
 ### Average childcare by single vs multi-parent
 childcare_summary <- parents %>%
@@ -55,13 +70,6 @@ childcare_summary <- parents %>%
             n = n())
 
 childcare_summary
-
-### Work time per respondent
-work <- parents %>%
-  group_by(TUCASEID) %>%
-  mutate(work_time = sum(TUACTDUR, na.rm = TRUE),
-         Gender = recode(TESEX, `1` = "Male", `2` = "Female")) %>%
-  ungroup()
 
 ### Visualizations
 
@@ -77,7 +85,7 @@ ggplot(childcare_summary, aes(x = single_parent, y = avg_childcare, fill = singl
   theme(legend.position = "none")
 
 
-ggplot(work, aes(x = Gender, y = total_childcare, fill = single_parent)) +
+ggplot(parents, aes(x = Gender, y = total_childcare, fill = single_parent)) +
   geom_boxplot(alpha = 0.7) +
   scale_fill_manual(values = c("FALSE" = "turquoise", "TRUE" = "gold"),
                     labels = c("Multi-Parent", "Single Parent")) +
