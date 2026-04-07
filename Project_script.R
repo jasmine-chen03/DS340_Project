@@ -5,6 +5,8 @@ library(data.table)
 library(viridis)
 library(sf)
 library(maps)
+library(usdm)
+library(randomForest)
 
 ### Load data
 activity <- read.csv("data/atusact_2024.dat")
@@ -118,20 +120,18 @@ parents0324 <- parents0324 %>%
 
 
 
-# impute missing data using mean imputation
+# replace missing data with 0
 parents2024 <- parents2024 %>%
-  group_by(single_parent, Gender) %>%
-  mutate(total_childcare = ifelse(is.na(total_childcare),
-                                  mean(total_childcare, na.rm = TRUE),
-                                  total_childcare)) %>%
-  ungroup()
+  mutate(
+    total_childcare = ifelse(is.na(total_childcare), 0, total_childcare),
+    work_time = ifelse(is.na(work_time), 0, work_time)
+  )
 
 parents0324 <- parents0324 %>%
-  group_by(TUYEAR, single_parent, Gender) %>%
-  mutate(total_childcare = ifelse(is.na(total_childcare),
-                                  mean(total_childcare, na.rm = TRUE),
-                                  total_childcare)) %>%
-  ungroup()
+  mutate(
+    total_childcare = ifelse(is.na(total_childcare), 0, total_childcare),
+    work_time = ifelse(is.na(work_time), 0, work_time)
+  )
 
 ### Summarize childcare
 
@@ -239,3 +239,130 @@ ggplot(childcare_trend, aes(x = TUYEAR, y = avg_childcare, color = factor(single
     legend.position = "top",
     plot.title = element_text(face = "bold")
   )
+
+
+######################
+#######MODELING#######
+######################
+# Convert categorical variables to factors
+parents2024 <- parents2024 %>%
+  select(-TUCASEID,-TUYEAR) %>%
+  mutate(
+    single_parent = factor(single_parent, labels = c("Multi-parent", "Single-parent")),
+    Gender = factor(Gender),
+    EducationAttain = factor(EducationAttain, labels = c("Below_HS", "HS", "Above_HS")),
+    Region = factor(StateFIPS)
+  ) %>%
+  select(-StateFIPS)
+  
+
+#VIF step test for multicollinearity
+
+xvar <- model.matrix(total_childcare ~ ., 
+                     data = parents2024)[,-1]
+vifstep(x = xvar, th = 5) # TESEX identified with collinearity problem
+
+### Linear Regression Model ###
+
+#test/train split
+set.seed(340)
+train_index <- sample(seq_len(nrow(parents2024)), size = 0.8 * nrow(parents2024))
+train_data <- parents2024[train_index, ]
+test_data <- parents2024[-train_index, ]
+
+model1 <- lm(total_childcare ~ single_parent + work_time + EducationAttain + Region, data = train_data)
+summary(model1)
+
+#VIF
+k <- 5
+folds <- cut(seq(1, nrow(parents2024)), breaks = k, labels = FALSE)
+cv_results <- numeric(k)
+
+for(i in 1:k){
+  test_fold <- which(folds == i)
+  train_fold <- setdiff(seq_len(nrow(parents2024)), test_fold)
+  
+  train_cv <- parents2024[train_fold, ]
+  test_cv <- parents2024[test_fold, ]
+  
+  fit <- lm(total_childcare ~ single_parent + work_time + EducationAttain + Region, data = train_cv)
+  preds <- predict(fit, newdata = test_cv)
+  
+  cv_results[i] <- mean((test_cv$total_childcare - preds)^2)  # MSE
+}
+
+mean(cv_results)
+
+# Residual plot
+# plot(model1, which=1)  # Residuals vs Fitted
+plot(model1, which=2)  # QQ plot
+
+# Predicted childcare by household type
+test_data$pred_lm <- predict(model1, newdata = test_data)
+
+# Residuals
+ggplot(test_data, aes(x = pred_lm, y = total_childcare - pred_lm)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype="dashed", color="red") +
+  labs(title="Linear Regression Residuals", x="Predicted", y="Residuals") +
+  theme_classic()
+
+# ggplot(test_data, aes(x = single_parent, y = pred_lm, fill = Gender)) +
+#   geom_boxplot() +
+#   labs(title = "Predicted Childcare Time by Household Type (Regression)",
+#        x = "Household Type", y = "Predicted Childcare Time") +
+#   theme_classic()
+
+
+
+### Random Forest Model ###
+
+# Train Random Forest on 2024 train data
+set.seed(340)
+rf_model <- randomForest(
+  total_childcare ~ single_parent + work_time + Gender + EducationAttain + Region,
+  data = train_data,
+  ntree = 500,
+  importance = TRUE
+)
+
+# Predictions on test set
+test_data$pred_rf <- predict(rf_model, newdata = test_data)
+
+# VIF
+k <- 5
+folds <- cut(seq(1, nrow(parents2024)), breaks = k, labels = FALSE)
+rf_cv_mse <- numeric(k)
+
+for(i in 1:k){
+  test_fold <- which(folds == i)
+  train_fold <- setdiff(seq_len(nrow(parents2024)), test_fold)
+  
+  train_cv <- parents2024[train_fold, ]
+  test_cv <- parents2024[test_fold, ]
+  
+  rf_cv <- randomForest(total_childcare ~ single_parent + work_time + Gender + EducationAttain + Region,
+                        data = train_cv, ntree = 300)
+  
+  preds <- predict(rf_cv, newdata = test_cv)
+  rf_cv_mse[i] <- mean((test_cv$total_childcare - preds)^2)
+}
+
+mean(rf_cv_mse)
+
+# Residuals
+ggplot(test_data, aes(x = pred_rf, y = total_childcare - pred_rf)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype="dashed", color="red") +
+  labs(title="Random Forest Residuals", x="Predicted", y="Residuals") +
+  theme_classic()
+
+# Feature importance plot
+varImpPlot(rf_model)
+
+# # Predicted childcare by household type
+# ggplot(test_data, aes(x = single_parent, y = pred_rf, fill = Gender)) +
+#   geom_boxplot() +
+#   labs(title = "Predicted Childcare Time by Household Type (Random Forest)",
+#        x = "Household Type", y = "Predicted Childcare Time") +
+#   theme_classic()
