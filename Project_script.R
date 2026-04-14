@@ -7,6 +7,9 @@ library(sf)
 library(maps)
 library(usdm)
 library(randomForest)
+library(knitr)
+library(gridExtra)
+library(grid)
 
 ### Load data
 activity <- read.csv("data/atusact_2024.dat")
@@ -188,25 +191,104 @@ table2 <- parents2024 %>%
 table2
 
 ## Figure 1. Child Care Time By Household Type and Gender Boxplot 
-ggplot(parents2024, aes(x = single_parent, y = total_childcare, fill = Gender)) +
+ggplot(parents2024, aes(x = Gender, y = total_childcare, fill = single_parent)) +
   geom_boxplot() +
+  coord_cartesian(ylim = c(0, 500)) +
+  scale_fill_manual(values = c("gold", "lightblue")) +
   labs(
-    title = "Figure 1. Childcare Time by Household Type and Gender 2024",
-    x = "Household Type",
-    y = "Total Childcare (minutes per day)"
+    title = "Figure 1. Childcare Time by Household Type and Gender 2024\n",
+    x = "Gender",
+    y = "Total Childcare (minutes per day)",
+    fill = "Household Type"
   ) +
-  theme_classic()
+  theme_classic()+
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 17, face = "bold")
+  )
+ggsave("figure1.png", width = 8, height = 6)
 
 ## Figure 2. Child Care Time By Household Type and Education Attainment
-ggplot(parents2024, aes(x = single_parent, y = total_childcare, fill = factor(EducationAttain))) +
+ggplot(parents2024, aes(x = factor(EducationAttain), y = total_childcare, fill = single_parent)) +
   geom_boxplot() +
+  scale_fill_manual(values = c("gold", "lightblue")) +
+  coord_cartesian(ylim = c(0, 500)) +
   labs(
-    title = "Figure 2. Childcare Time by Household Type and Education Attainment 2024",
-    x = "Household Type",
+    title = "Figure 2. Childcare Time by Household Type and \nEducation Attainment 2024\n",
+    x = "Education Attainment",
     y = "Total Childcare (minutes per day)",
-    fill = "Education Level"
+    fill = "Household Type"
   ) +
-  theme_classic()
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 17, face = "bold")
+  )
+ggsave("figure2.png", width = 8, height = 6)
+
+
+## Figure 3.1
+state_summary <- parents2024 %>%
+  group_by(StateFIPS, single_parent) %>%
+  summarise(
+    avg_childcare = mean(total_childcare, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(single_parent)
+
+us_states <- map_data("state")
+
+fips_lookup <- as.data.frame(state.fips) %>%
+  mutate(region = gsub(":.*", "", polyname)) %>%
+  distinct(fips, region)
+
+state_summary_map <- state_summary %>%
+  left_join(fips_lookup, by = c("StateFIPS" = "fips")) %>%
+  left_join(us_states, by = "region")
+
+ggplot(state_summary_map, aes(x = long, y = lat, group = group, fill = avg_childcare)) +
+  geom_polygon(color = "white") +
+  coord_map("albers", lat0 = 39, lat1 = 45) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue", name = "Avg Childcare\n(min/day)") +
+  labs(
+    title = "Figure 3.1. Average Childcare Time by State (Single Parents) 2024",
+    x = "", y = ""
+  ) +
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 15, face = "bold"),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.line = element_blank()
+  )
+ggsave("figure3.1.png", width = 8, height = 6)
+# 3.2
+state_summary2 <- parents2024 %>%
+  group_by(StateFIPS, single_parent) %>%
+  summarise(
+    avg_childcare = mean(total_childcare, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(!single_parent)
+
+state_summary_map2 <- state_summary2 %>%
+  left_join(fips_lookup, by = c("StateFIPS" = "fips")) %>%
+  left_join(us_states, by = "region")
+
+ggplot(state_summary_map2, aes(x = long, y = lat, group = group, fill = avg_childcare)) +
+  geom_polygon(color = "white") +
+  coord_map("albers", lat0 = 39, lat1 = 45) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue", name = "Avg Childcare\n(min/day)") +
+  labs(
+    title = "Figure 3.2. Average Childcare Time by State (Multi-Parents) 2024",
+    x = "", y = ""
+  ) +
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 15, face = "bold"),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.line = element_blank()
+  )
+ggsave("figure3.2.png", width = 8, height = 6)
 
 
 
@@ -234,12 +316,12 @@ ggplot(childcare_trend, aes(x = TUYEAR, y = avg_childcare, color = factor(single
     y = "Average Childcare Time (minutes)",
     caption = "Data: ATUS 2003-2024"
   ) +
-  theme_minimal(base_size = 14) +
+  theme_classic(base_size = 14) +
   theme(
     legend.position = "top",
     plot.title = element_text(face = "bold")
   )
-
+ggsave("figure4.png", width = 10, height = 4)
 
 ######################
 #######MODELING#######
@@ -270,10 +352,21 @@ train_index <- sample(seq_len(nrow(parents2024)), size = 0.8 * nrow(parents2024)
 train_data <- parents2024[train_index, ]
 test_data <- parents2024[-train_index, ]
 
-model1 <- lm(total_childcare ~ single_parent + work_time + EducationAttain + Region, data = train_data)
+model1 <- lm(total_childcare ~ single_parent + work_time + EducationAttain, data = train_data)
 summary(model1)
 
-#VIF
+coef_table <- as.data.frame(summary(model1)$coefficients)
+coef_table <- round(coef_table, 3)
+coef_table$Significance <- ifelse(coef_table[,4] < 0.001, "***",
+                                  ifelse(coef_table[,4] < 0.01, "**",
+                                         ifelse(coef_table[,4] < 0.05, "*",
+                                                ifelse(coef_table[,4] < 0.1, ".", ""))))
+
+png("model1_coefficients.png", width = 1400, height = 500, res = 200)
+grid.table(coef_table)
+dev.off()
+
+#k-fold CV
 k <- 5
 folds <- cut(seq(1, nrow(parents2024)), breaks = k, labels = FALSE)
 cv_results <- numeric(k)
@@ -285,7 +378,7 @@ for(i in 1:k){
   train_cv <- parents2024[train_fold, ]
   test_cv <- parents2024[test_fold, ]
   
-  fit <- lm(total_childcare ~ single_parent + work_time + EducationAttain + Region, data = train_cv)
+  fit <- lm(total_childcare ~ single_parent + work_time + EducationAttain, data = train_cv)
   preds <- predict(fit, newdata = test_cv)
   
   cv_results[i] <- mean((test_cv$total_childcare - preds)^2)  # MSE
@@ -304,14 +397,12 @@ test_data$pred_lm <- predict(model1, newdata = test_data)
 ggplot(test_data, aes(x = pred_lm, y = total_childcare - pred_lm)) +
   geom_point(alpha = 0.5) +
   geom_hline(yintercept = 0, linetype="dashed", color="red") +
-  labs(title="Linear Regression Residuals", x="Predicted", y="Residuals") +
-  theme_classic()
-
-# ggplot(test_data, aes(x = single_parent, y = pred_lm, fill = Gender)) +
-#   geom_boxplot() +
-#   labs(title = "Predicted Childcare Time by Household Type (Regression)",
-#        x = "Household Type", y = "Predicted Childcare Time") +
-#   theme_classic()
+  labs(title="Linear Regression Residuals\n", x="Predicted", y="Residuals") +
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 17, face = "bold")
+  )
+ggsave("resid1.png", width = 8, height = 6)
 
 
 
@@ -329,7 +420,7 @@ rf_model <- randomForest(
 # Predictions on test set
 test_data$pred_rf <- predict(rf_model, newdata = test_data)
 
-# VIF
+#k-fold CV
 k <- 5
 folds <- cut(seq(1, nrow(parents2024)), breaks = k, labels = FALSE)
 rf_cv_mse <- numeric(k)
@@ -354,15 +445,43 @@ mean(rf_cv_mse)
 ggplot(test_data, aes(x = pred_rf, y = total_childcare - pred_rf)) +
   geom_point(alpha = 0.5) +
   geom_hline(yintercept = 0, linetype="dashed", color="red") +
-  labs(title="Random Forest Residuals", x="Predicted", y="Residuals") +
-  theme_classic()
+  labs(title="Random Forest Residuals\n", x="Predicted", y="Residuals") +
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 17, face = "bold")
+  )
+ggsave("resid2.png", width = 8, height = 6)
+
 
 # Feature importance plot
-varImpPlot(rf_model)
+png("varimp.png", width = 1500, height = 1200, res = 200)
+varImpPlot(rf_model,main="")
+title(main = "Feature Importance Plot", cex.main = 1.5)
+dev.off()
 
-# # Predicted childcare by household type
-# ggplot(test_data, aes(x = single_parent, y = pred_rf, fill = Gender)) +
-#   geom_boxplot() +
-#   labs(title = "Predicted Childcare Time by Household Type (Random Forest)",
-#        x = "Household Type", y = "Predicted Childcare Time") +
-#   theme_classic()
+importance_df <- as.data.frame(importance(rf_model))
+importance_df$Variable <- rownames(importance_df)
+colnames(importance_df)[1] <- "IncMSE"  # rename to avoid % symbol
+
+ggplot(importance_df, aes(x = reorder(Variable, IncMSE), y = IncMSE)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Figure 4. Feature Importance Plot\n",
+    x = "Variable",
+    y = "% Increase in MSE"
+  ) +
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 15, face = "bold")
+  )
+
+ggsave("varimp_bar.png", width = 8, height = 6)
+
+
+# Linear Regression RMSE
+lm_rmse <- sqrt(mean((test_data$total_childcare - test_data$pred_lm)^2))
+lm_rmse
+# Random Forest RMSE
+rf_rmse <- sqrt(mean((test_data$total_childcare - test_data$pred_rf)^2))
+rf_rmse
